@@ -14,7 +14,7 @@ import autoTagLink from "./autoTagLink";
 import { LinkWithCollectionOwnerAndTags } from "@linkwarden/types";
 import { isArchivalTag } from "@linkwarden/lib";
 import { ArchivalSettings } from "@linkwarden/types";
-import { getDefaultContextOptions } from "./browser";
+import { getDefaultContextOptions, solveCaptcha } from "./browser";
 
 const BROWSER_TIMEOUT = Number(process.env.BROWSER_TIMEOUT) || 5;
 
@@ -68,7 +68,31 @@ export default async function archiveHandler(
   });
 
   const contextOptions = getDefaultContextOptions();
+
+  const captchaSolve = await solveCaptcha(link.url!);
+
+  if (captchaSolve.userAgent) {
+    console.info(`Applying FlareSolverr User-Agent: ${captchaSolve.userAgent}`);
+    contextOptions.userAgent = captchaSolve.userAgent;
+  }
+
   const context = await browser.newContext(contextOptions);
+
+  if (captchaSolve.status === "error") {
+    console.error("Error solving captcha");
+  } else if (captchaSolve.status === "fail") {
+    console.warn("Failed solving captcha");
+  } else if (captchaSolve.status === "skip") {
+    console.info("Skip solving captcha");
+  } else {
+    if (captchaSolve.solution) {
+      console.info(
+        `Solving captcha with ${captchaSolve.solution.cookies.length} cookies`
+      );
+      await context.addCookies(captchaSolve.solution.cookies);
+    }
+  }
+
   const page = await context.newPage();
 
   createFolder({ filePath: `archives/preview/${link.collectionId}` });
@@ -98,6 +122,7 @@ export default async function archiveHandler(
           aiTag: user.aiTaggingMethod !== AiTaggingMethod.DISABLED,
         };
 
+  let newLinkName = "";
   try {
     await Promise.race([
       (async () => {
@@ -119,6 +144,23 @@ export default async function archiveHandler(
           return;
         } else if (link.url) {
           await page.goto(link.url, { waitUntil: "domcontentloaded" });
+          newLinkName = await page.title();
+
+          if (
+            newLinkName === "Just a moment..." &&
+            captchaSolve.solution?.response
+          ) {
+            console.warn(
+              "Challenge detected after goto, using FlareSolverr content fallback"
+            );
+            await page.setContent(captchaSolve.solution.response, {
+              waitUntil: "domcontentloaded",
+              baseURL: link.url,
+            });
+            newLinkName = await page.title();
+          }
+
+          console.info(`Page title after load: "${newLinkName}"`);
 
           // Handle Monolith being sent in beforehand while making sure other values line up
           if (link.monolith?.endsWith(".html")) {
@@ -131,10 +173,12 @@ export default async function archiveHandler(
               if (typeof fileContent === "string") {
                 await page.setContent(fileContent, {
                   waitUntil: "domcontentloaded",
+                  baseURL: link.url || undefined,
                 });
               } else {
                 await page.setContent(fileContent.toString("utf-8"), {
                   waitUntil: "domcontentloaded",
+                  baseURL: link.url || undefined,
                 });
               }
             }
@@ -205,9 +249,19 @@ export default async function archiveHandler(
     });
 
     if (finalLink) {
+      // Replace the captcha-blocked link name if it has not been updated by user, else keep the same name
+      if (
+        newLinkName === "" ||
+        finalLink.name === newLinkName ||
+        finalLink.name !== "Just a moment..."
+      ) {
+        newLinkName = finalLink.name;
+      }
+
       await prisma.link.update({
         where: { id: link.id },
         data: {
+          name: newLinkName,
           lastPreserved: new Date().toISOString(),
           readable: !finalLink.readable ? "unavailable" : undefined,
           image: !finalLink.image ? "unavailable" : undefined,

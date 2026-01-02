@@ -14,35 +14,58 @@ const handleArchivePreview = async (
   link: LinksAndCollectionAndOwner,
   page: Page
 ) => {
-  let ogImageUrl = await page.evaluate(() => {
-    const metaTag = document.querySelector('meta[property="og:image"]');
-    return metaTag ? (metaTag as any).content : null;
+  const ogImageUrl = await page.evaluate(() => {
+    const selectors = [
+      'meta[property="og:image"]',
+      'meta[name="og:image"]',
+      'meta[property="twitter:image"]',
+      'meta[name="twitter:image"]',
+      'meta[name="image"]',
+    ];
+    for (const selector of selectors) {
+      const metaTag = document.querySelector(selector);
+      if (metaTag && (metaTag as any).content) {
+        return (metaTag as any).content;
+      }
+    }
+    return null;
   });
 
   let previewGenerated = false;
 
   if (ogImageUrl) {
+    console.info(`Found og:image: ${ogImageUrl}`);
+    let absoluteOgImageUrl = ogImageUrl;
     if (
       !ogImageUrl.startsWith("http://") &&
       !ogImageUrl.startsWith("https://")
     ) {
       const origin = await page.evaluate(() => document.location.origin);
-      ogImageUrl =
+      absoluteOgImageUrl =
         origin + (ogImageUrl.startsWith("/") ? ogImageUrl : "/" + ogImageUrl);
     }
 
-    const imageResponse = await page.goto(ogImageUrl);
+    try {
+      const imageResponse = await page.context.request.get(absoluteOgImageUrl);
 
-    if (imageResponse && !link.preview?.startsWith("archive")) {
-      const buffer = await imageResponse.body();
-      previewGenerated = await generatePreview(
-        buffer,
-        link.collectionId,
-        link.id
-      );
+      if (imageResponse.ok() && !link.preview?.startsWith("archive")) {
+        const buffer = await imageResponse.body();
+        previewGenerated = await generatePreview(
+          buffer,
+          link.collectionId,
+          link.id
+        );
+        if (previewGenerated) {
+          console.info("Successfully generated preview from og:image");
+        }
+      } else {
+        console.warn(
+          `Failed to fetch og:image. Status: ${imageResponse.status()}`
+        );
+      }
+    } catch (error) {
+      console.error(`Error fetching og:image: ${error}`);
     }
-
-    await page.goBack();
   }
 
   if (!previewGenerated && !link.preview?.startsWith("archive")) {

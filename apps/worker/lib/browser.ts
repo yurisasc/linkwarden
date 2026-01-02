@@ -5,6 +5,7 @@ import {
   type LaunchOptions,
   type BrowserContextOptions,
 } from "playwright";
+import axios from "axios";
 
 export function getBrowserOptions(): LaunchOptions {
   let browserOptions: LaunchOptions = {
@@ -29,6 +30,65 @@ export function getBrowserOptions(): LaunchOptions {
   }
 
   return browserOptions;
+}
+
+export async function solveCaptcha(
+  url: string,
+  maxTimeout: number = 60000
+): Promise<{
+  status: string;
+  userAgent?: string;
+  solution?: {
+    cookies: {
+      name: string;
+      value: string;
+      domain: string;
+      path: string;
+      secure: boolean;
+      expires?: number;
+      httpOnly?: boolean;
+      sameSite?: "Strict" | "Lax" | "None";
+    }[];
+    response?: string;
+  };
+}> {
+  if (process.env.FLARESOLVERR_URL) {
+    try {
+      console.info(`Calling FlareSolverr for ${url}...`);
+      const flareSolverrUrl = process.env.FLARESOLVERR_URL.endsWith("/v1")
+        ? process.env.FLARESOLVERR_URL
+        : `${process.env.FLARESOLVERR_URL.replace(/\/$/, "")}/v1`;
+
+      const response = await axios.post(
+        flareSolverrUrl,
+        {
+          cmd: "request.get",
+          url,
+          maxTimeout,
+        },
+        {
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+
+      if (response.status !== 200) {
+        console.error(`FlareSolverr returned status ${response.status}`);
+        return { status: "fail" };
+      }
+
+      console.info(`FlareSolverr status: ${response.data.status}`);
+      return {
+        status: response.data.status,
+        solution: response.data.solution,
+        userAgent: response.data.solution?.userAgent,
+      };
+    } catch (error) {
+      console.error("Error during captcha solving:", error);
+      return { status: "error" };
+    }
+  }
+
+  return { status: "skip" };
 }
 
 export function getDefaultContextOptions(): BrowserContextOptions {
