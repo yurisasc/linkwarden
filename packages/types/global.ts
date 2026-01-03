@@ -94,6 +94,8 @@ export type LinkRequestQuery = {
   tagId?: number;
   pinnedOnly?: boolean;
   searchQueryString?: string;
+  startDate?: string;
+  endDate?: string;
 };
 
 export type PublicLinkRequestQuery = {

@@ -25,6 +25,12 @@ export default async function search(
       searchQueryString: req.query.searchQueryString
         ? (req.query.searchQueryString as string)
         : undefined,
+      startDate: req.query.startDate
+        ? (req.query.startDate as string)
+        : undefined,
+      endDate: req.query.endDate
+        ? (req.query.endDate as string)
+        : undefined,
     };
 
     const { statusCode, ...data } = await searchLinks({

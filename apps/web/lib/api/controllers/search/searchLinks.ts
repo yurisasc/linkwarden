@@ -48,6 +48,28 @@ export default async function searchLinks({
     });
   }
 
+  const dateCondition = [];
+  if (query.startDate) {
+    const startDate = new Date(query.startDate);
+    if (!Number.isNaN(startDate.getTime())) {
+      dateCondition.push({
+        createdAt: {
+          gte: startDate,
+        },
+      });
+    }
+  }
+  if (query.endDate) {
+    const endDate = new Date(query.endDate);
+    if (!Number.isNaN(endDate.getTime())) {
+      dateCondition.push({
+        createdAt: {
+          lte: endDate,
+        },
+      });
+    }
+  }
+
   const pinnedCondition =
     query.pinnedOnly && userId ? { pinnedBy: { some: { id: userId } } } : {};
 
@@ -212,6 +234,7 @@ export default async function searchLinks({
             ]
           : []),
         ...collectionCondition,
+        ...dateCondition,
         {
           OR: [
             ...tagCondition,
