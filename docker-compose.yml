@@ -11,7 +11,7 @@ services:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
     restart: always
     # build: . # uncomment to build from source
-    image: ghcr.io/linkwarden/linkwarden:latest # comment to build from source
+    image: ghcr.io/yurisasc/linkwarden:latest # comment to build from source
     ports:
       - 3000:3000
     volumes:
@@ -19,6 +19,7 @@ services:
     depends_on:
       - postgres
       - meilisearch
+      - flaresolverr
   meilisearch:
     image: getmeili/meilisearch:v1.12.8
     restart: always
@@ -26,3 +27,6 @@ services:
       - .env
     volumes:
       - ./meili_data:/meili_data
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    restart: always

@@ -13,7 +13,7 @@ import pdfHandler from "./preservationScheme/pdfHandler";
 import { LinkWithCollectionOwnerAndTags } from "@linkwarden/types/global";
 import { isArchivalTag } from "@linkwarden/lib/isArchivalTag";
 import { ArchivalSettings } from "@linkwarden/types/global";
-import { getDefaultContextOptions } from "./browser";
+import { getDefaultContextOptions, solveCaptcha } from "./browser";
 import {
   assertUrlIsSafeForServerSideFetch,
   UnsafeUrlError,
@@ -21,6 +21,17 @@ import {
 import protectPageRequests from "./protectPageRequests";
 
 const BROWSER_TIMEOUT = Number(process.env.BROWSER_TIMEOUT) || 5;
+
+function isCloudflareTitle(title?: string | null) {
+  if (!title) return false;
+  const t = title.toLowerCase();
+  return (
+    t.includes("just a moment") ||
+    t.includes("attention required") ||
+    t.includes("cloudflare") ||
+    t.includes("verify you are human")
+  );
+}
 
 export default async function archiveHandler(
   link: LinkWithCollectionOwnerAndTags,
@@ -74,10 +85,10 @@ export default async function archiveHandler(
     }, BROWSER_TIMEOUT * 60000);
   });
 
-  const contextOptions = getDefaultContextOptions();
-  const context = await browser.newContext(contextOptions);
+  const baseContextOptions = getDefaultContextOptions();
+  let context = await browser.newContext(baseContextOptions);
   await protectPageRequests(context);
-  const page = await context.newPage();
+  let page = await context.newPage();
 
   createFolder({ filePath: `archives/preview/${link.collectionId}` });
   createFolder({ filePath: `archives/${link.collectionId}` });
@@ -128,12 +139,66 @@ export default async function archiveHandler(
         } else if (link.url) {
           await page.goto(link.url, { waitUntil: "domcontentloaded" });
 
+          const initialTitle = await page.title().catch(() => "");
+
+          if (isCloudflareTitle(initialTitle) && link.url) {
+            console.log(
+              `Detected Cloudflare challenge, using FlareSolverr for: ${link.url}`
+            );
+            const solved = await solveCaptcha(link.url);
+
+            if (solved.status === "ok" && solved.solution) {
+              console.log(
+                "FlareSolverr returned ok status; applying cookies/user-agent to Playwright context."
+              );
+              await context.close().catch(() => {});
+
+              const nextContextOptions = solved.userAgent
+                ? {
+                    ...baseContextOptions,
+                    userAgent: solved.userAgent,
+                  }
+                : baseContextOptions;
+
+              context = await browser.newContext(nextContextOptions);
+
+              if (solved.solution.cookies?.length) {
+                await context.addCookies(solved.solution.cookies);
+              }
+
+              page = await context.newPage();
+              await page.goto(link.url, { waitUntil: "domcontentloaded" });
+
+              const afterSolveTitle = await page.title().catch(() => "");
+              if (
+                isCloudflareTitle(afterSolveTitle) &&
+                solved.solution.response
+              ) {
+                console.log(
+                  "Page still looks like Cloudflare after cookie navigation; using FlareSolverr HTML response as fallback."
+                );
+                await page.setContent(solved.solution.response, {
+                  waitUntil: "domcontentloaded",
+                  baseURL: link.url,
+                });
+              } else {
+                console.log(
+                  "Cloudflare challenge cleared after applying FlareSolverr cookies/user-agent."
+                );
+              }
+            } else if (solved.status !== "skip") {
+              console.log(
+                `FlareSolverr did not return ok status (status=${solved.status}). Continuing without it.`
+              );
+            }
+          }
+
           // Handle Monolith being sent in beforehand while making sure other values line up
           if (link.monolith?.endsWith(".html")) {
             // Use Monolith content instead of page
             const file = await readFile(link.monolith);
 
-            if (file.contentType == "text/html") {
+            if (file.contentType === "text/html") {
               const fileContent = file.file;
 
               if (typeof fileContent === "string") {
@@ -145,6 +210,18 @@ export default async function archiveHandler(
                   waitUntil: "domcontentloaded",
                 });
               }
+            }
+          }
+
+          if (isCloudflareTitle(link.name)) {
+            const title = await page.title().catch(() => undefined);
+            if (title && !isCloudflareTitle(title)) {
+              await prisma.link.update({
+                where: { id: link.id },
+                data: {
+                  name: title,
+                },
+              });
             }
           }
 
