@@ -1,5 +1,6 @@
 import { Collection, Link, User } from "@linkwarden/prisma/client";
 import { Page } from "playwright";
+import { URL } from "node:url";
 import { generatePreview } from "@linkwarden/lib";
 import { createFile } from "@linkwarden/filesystem";
 import { prisma } from "@linkwarden/prisma";
@@ -14,38 +15,86 @@ const handleArchivePreview = async (
   link: LinksAndCollectionAndOwner,
   page: Page
 ) => {
-  let ogImageUrl = await page.evaluate(() => {
-    const metaTag = document.querySelector('meta[property="og:image"]');
-    return metaTag ? (metaTag as any).content : null;
+  const ogImageUrl = await page.evaluate(() => {
+    const doc = (
+      globalThis as unknown as {
+        document?: {
+          querySelector: (
+            selector: string
+          ) => { getAttribute?: (name: string) => string | null } | null;
+        };
+      }
+    ).document;
+
+    const selectors = [
+      'meta[property="og:image"]',
+      'meta[property="og:image:secure_url"]',
+      'meta[name="og:image"]',
+      'meta[name="twitter:image"]',
+      'meta[name="twitter:image:src"]',
+      'meta[name="image"]',
+      'meta[itemprop="image"]',
+    ];
+
+    for (const selector of selectors) {
+      const el = doc?.querySelector(selector);
+      const content = el?.getAttribute?.("content");
+      if (content) return content;
+    }
+
+    return null;
   });
 
   let previewGenerated = false;
 
   if (ogImageUrl) {
-    if (
-      !ogImageUrl.startsWith("http://") &&
-      !ogImageUrl.startsWith("https://")
-    ) {
-      const origin = await page.evaluate(() => document.location.origin);
-      ogImageUrl =
-        origin + (ogImageUrl.startsWith("/") ? ogImageUrl : "/" + ogImageUrl);
+    try {
+      const resolvedOgImageUrl = new URL(ogImageUrl, page.url()).toString();
+      const userAgent = await page
+        .evaluate(
+          () =>
+            (
+              globalThis as unknown as {
+                navigator?: { userAgent?: string };
+              }
+            ).navigator?.userAgent
+        )
+        .catch(() => undefined);
+
+      const headers: Record<string, string> = {
+        Referer: page.url(),
+      };
+      if (userAgent) headers["User-Agent"] = userAgent;
+
+      const imageResponse = await page
+        .context()
+        .request.get(resolvedOgImageUrl, { headers });
+
+      const contentType = imageResponse.headers()["content-type"];
+
+      if (
+        imageResponse.ok() &&
+        contentType?.startsWith("image") &&
+        !link.preview?.startsWith("archive")
+      ) {
+        const buffer = await imageResponse.body();
+        previewGenerated = await generatePreview(
+          buffer,
+          link.collectionId,
+          link.id
+        );
+
+        if (previewGenerated) {
+          console.log("Successfully generated preview from og:image");
+        }
+      }
+    } catch (_err) {
+      previewGenerated = false;
     }
-
-    const imageResponse = await page.goto(ogImageUrl);
-
-    if (imageResponse && !link.preview?.startsWith("archive")) {
-      const buffer = await imageResponse.body();
-      previewGenerated = await generatePreview(
-        buffer,
-        link.collectionId,
-        link.id
-      );
-    }
-
-    await page.goBack();
   }
 
   if (!previewGenerated && !link.preview?.startsWith("archive")) {
+    console.log("Falling back to screenshot preview");
     await page
       .screenshot({ type: "jpeg", quality: 20 })
       .then(async (screenshot) => {
